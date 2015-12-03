@@ -16,13 +16,13 @@ namespace SpritePacker
             parser.AddCommand("out", "The filename to be used for the exported files, without extension.", null);
             parser.AddCommand("prefix", "A prefix to be inserted before sprite names.", "");
             parser.AddCommand("use-folders", "Whether to use folder structure as a prefix for sprite names.", "on");
-            parser.AddCommand("max-size", "The maximum size in pixels in any direction of the exported images.", "2048");
-            parser.AddCommand("margin", "The minimum space in pixels between any sprites.", "1");
+            parser.AddCommand("max-size", "The maximum width and height of the exported images, in pixels.", "2048");
+            parser.AddCommand("margin", "The minimum space between any sprites, in pixels.", "1");
             parser.AddCommand("use-crop-info", "Whether to use crop information in sprite sheets to save space.", "on");
             parser.AddCommand("use-src-ext", "Whether to include the file extension in the \"src\" field.", "on");
 
-            Console.Out.WriteLine("## SpritePacker v0.1");
-            Console.Out.WriteLine("## Written by Henrique Lorenzi, 21 nov 2015");
+            Console.Out.WriteLine("## SpritePacker v0.2");
+            Console.Out.WriteLine("## Written by Henrique Lorenzi, 3 dec 2015");
             Console.Out.WriteLine();
 
             var commands = new Dictionary<string, string>();
@@ -42,7 +42,11 @@ namespace SpritePacker
             useCropInfo = (commands["use-crop-info"] == "on");
             useSrcExt = (commands["use-src-ext"] == "on");
 
-            Export();
+            var result = Export();
+            if (result)
+                Console.Out.WriteLine("Export successful.");
+            else
+                Console.Out.WriteLine("Error: Could not fit every sprite.");
         }
 
 
@@ -102,7 +106,7 @@ namespace SpritePacker
                 s.Indent();
 
                 var count = 0.0f;
-                Console.Out.WriteLine("Reading sprites from sheet files...");
+                Console.Out.WriteLine("Reading sprites...");
 
                 var spritesToExport = new List<Sprite>();
                 var imageFiles = new Dictionary<string, string>();
@@ -124,80 +128,17 @@ namespace SpritePacker
 
                 while (spritesToExport.Count > 0)
                 {
-                    Console.Out.WriteLine("" + spritesToExport.Count + " sprites remaining to pack.");
+                    Console.Out.WriteLine("" + spritesToExport.Count + " sprites remaining to pack...");
 
-                    var lastSpritesToExportNum = spritesToExport.Count;
-
-                    var tentativeSprites = new List<Sprite>();
-                    var tentativeArea = 0;
-
-                    for (int i = 0; i < spritesToExport.Count; i++)
-                    {
-                        var spr = spritesToExport[i];
-                        var area =
-                            (spr.width - (useCropInfo ? spr.cropLeft + spr.cropRight : 0)) *
-                            (spr.height - (useCropInfo ? spr.cropTop + spr.cropBottom : 0));
-                        if (tentativeArea + area < maxArea)
-                        {
-                            tentativeSprites.Add(spr);
-                            tentativeArea += area;
-                            if (tentativeArea >= maxArea)
-                                break;
-                        }
-                    }
-
-                    if (tentativeSprites.Count == 0)
+                    var packing = TryPacking(spritesToExport, maxSize);
+                    if (packing == null || packing.rectangles.Count == 0)
                         return false;
 
-                    for (int i = 0; i < tentativeSprites.Count; i++)
-                    {
-                        spritesToExport.Remove(tentativeSprites[i]);
-                    }
+                    foreach (var rect in packing.rectangles)
+                        spritesToExport.Remove((Sprite)rect.tag);
 
-                    RectanglePacker.Packing packing = null;
-
-                    Console.Out.WriteLine("Binary search for Pack " + exportCount + " with at most " + tentativeSprites.Count + " sprites:");
-                    var searchMin = 0;
-                    var searchMax = tentativeSprites.Count * 2;
-                    while (true)
-                    {
-                        var searchMid = (searchMin + searchMax + 1) / 2;
-
-                        Console.Out.Write("-- Trying to fit " + searchMid + " sprites...");
-
-                        var curList = new List<Sprite>(tentativeSprites.Count);
-                        for (var i = 0; i < searchMid; i++)
-                            curList.Add(tentativeSprites[i]);
-
-                        var curPacking = TryPacking(curList, maxSize);
-                        if (curPacking == null)
-                        {
-                            Console.Out.WriteLine("Failed.");
-                            searchMax = searchMid - 1;
-                        }
-                        else
-                        {
-                            Console.Out.WriteLine("OK.");
-                            searchMin = searchMid;
-                            packing = curPacking;
-
-                            if (searchMid >= tentativeSprites.Count)
-                                break;
-                        }
-
-                        if (searchMin >= searchMax)
-                            break;
-                    }
-
-                    if (packing == null)
-                        return false;
-
-                    for (var rem = (searchMin + searchMax + 1) / 2; rem < tentativeSprites.Count; rem++)
-                    {
-                        spritesToExport.Add(tentativeSprites[rem]);
-                    }
-
-                    Console.Out.Write("Exporting " + packing.rectangles.Count + " sprites for Pack " + exportCount + "...");
+                    Console.Out.WriteLine("" + packing.rectangles.Count + " sprites were fitted in pack " + exportCount + ".");
+                    Console.Out.Write("Writing image file");
 
                     ExportPackFile(
                         packing, imageFiles,
@@ -365,12 +306,14 @@ namespace SpritePacker
             var packer = new RectanglePacker();
             packer.SetBorder(margin);
 
-            RectanglePacker.Packing packing = null;
+            var packing = packer.Pack(maxSize, maxSize, rectList);
+            if (packing == null || packing.rectangles.Count == 0)
+                return null;
 
-            for (var curSize = maxSize; curSize >= 8 && curSize * curSize >= totalArea; curSize /= 2)
+            for (var curSize = maxSize; curSize >= 8; curSize /= 2)
             {
-                var newPacking = packer.Pack(curSize, curSize, rectList);
-                if (newPacking == null)
+                var newPacking = packer.PackAll(maxSize, maxSize, packing.rectangles);
+                if (newPacking == null || newPacking.rectangles.Count == 0)
                     break;
 
                 packing = newPacking;
