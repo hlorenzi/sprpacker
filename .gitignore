@@ -1,3 +1,5 @@
 /.vs/
 /bin/
 /obj/
+/sprpacker_test/bin/
+/sprpacker_test/obj/

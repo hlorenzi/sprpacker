@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Xml;
 using System.Drawing;
+using System.Threading.Tasks;
 
 
 namespace SpritePacker
@@ -20,9 +21,10 @@ namespace SpritePacker
             parser.AddCommand("margin", "The minimum space between any sprites, in pixels.", "1");
             parser.AddCommand("use-crop-info", "Whether to use crop information in sprite sheets to save space.", "on");
             parser.AddCommand("use-src-ext", "Whether to include the file extension in the \"src\" field.", "on");
+            parser.AddCommand("debug", "Whether to print debug information.", "off");
 
-            Console.Out.WriteLine("## SpritePacker v0.2");
-            Console.Out.WriteLine("## Written by Henrique Lorenzi, 3 dec 2015");
+            Console.Out.WriteLine("## SpritePacker v0.3");
+            Console.Out.WriteLine("## Written by Henrique Lorenzi, 18 dec 2015");
             Console.Out.WriteLine();
 
             var commands = new Dictionary<string, string>();
@@ -41,6 +43,7 @@ namespace SpritePacker
             useFolders = (commands["use-folders"] == "on");
             useCropInfo = (commands["use-crop-info"] == "on");
             useSrcExt = (commands["use-src-ext"] == "on");
+            debug = (commands["debug"] == "on");
 
             var result = Export();
             if (result)
@@ -60,6 +63,7 @@ namespace SpritePacker
         private static bool useFolders;
         private static bool useCropInfo;
         private static bool useSrcExt;
+        private static bool debug;
 
 
         private class DataObject
@@ -138,7 +142,7 @@ namespace SpritePacker
                         spritesToExport.Remove((Sprite)rect.tag);
 
                     Console.Out.WriteLine("" + packing.rectangles.Count + " sprites were fitted in pack " + exportCount + ".");
-                    Console.Out.Write("Writing image file");
+                    Console.Out.WriteLine("Writing image file...");
 
                     ExportPackFile(
                         packing, imageFiles,
@@ -291,7 +295,6 @@ namespace SpritePacker
         private static RectanglePacker.Packing TryPacking(List<Sprite> sprites, int maxSize)
         {
             var rectList = new List<RectanglePacker.Rectangle>();
-            var totalArea = 0;
 
             foreach (var spr in sprites)
             {
@@ -299,25 +302,23 @@ namespace SpritePacker
                 rect.width = spr.width - (useCropInfo ? (spr.cropLeft + spr.cropRight) : 0);
                 rect.height = spr.height - (useCropInfo ? (spr.cropTop + spr.cropBottom) : 0);
                 rect.tag = spr;
+                rect.debugName = spr.spriteFullName;
                 rectList.Add(rect);
-                totalArea += rect.width * rect.height;
             }
 
-            var packer = new RectanglePacker();
-            packer.SetBorder(margin);
-
-            var packing = packer.Pack(maxSize, maxSize, rectList);
+            var packing = RectanglePacker.PackAsManyAsPossible(margin, maxSize, maxSize, rectList, debug);
             if (packing == null || packing.rectangles.Count == 0)
                 return null;
 
-            for (var curSize = maxSize; curSize >= 8; curSize /= 2)
+            // FIXME: PackAll is overwriting rectangle positions.
+            /*for (var curSize = maxSize; curSize >= 8; curSize /= 2)
             {
-                var newPacking = packer.PackAll(maxSize, maxSize, packing.rectangles);
+                var newPacking = RectanglePacker.PackAll(margin, maxSize, maxSize, packing.rectangles, debug);
                 if (newPacking == null || newPacking.rectangles.Count == 0)
                     break;
 
                 packing = newPacking;
-            }
+            }*/
 
             return packing;
         }
@@ -328,65 +329,101 @@ namespace SpritePacker
             var w = packing.totalWidth;
             var h = packing.totalHeight;
 
-            var progress = 0;
+            Bitmap destBmp = new Bitmap(w, h);
 
-            Bitmap pngpack = new Bitmap(w, h);
-            for (int j = 0; j < h; j++)
+            unsafe
             {
-                for (int i = 0; i < w; i++)
-                {
-                    pngpack.SetPixel(i, j, Color.FromArgb(0, 0, 0, 0));
-                }
+                var destLockBits = destBmp.LockBits(
+                    new Rectangle(0, 0, w, h),
+                    System.Drawing.Imaging.ImageLockMode.WriteOnly,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
 
-                if (j > progress + h / 10)
+                byte* destPixelPtr = (byte*)destLockBits.Scan0.ToPointer();
+
+                Parallel.For(0, h, (j) =>
                 {
-                    progress += h / 10;
-                    Console.Out.Write(".");
-                }
+                    byte* writePtr = destPixelPtr + j * destLockBits.Stride;
+
+                    for (int i = 0; i < w; i++)
+                    {
+                        writePtr[i * 4 + 0] = 0;
+                        writePtr[i * 4 + 1] = 0;
+                        writePtr[i * 4 + 2] = 0;
+                        writePtr[i * 4 + 3] = 0;
+                    }
+                });
+
+                var imageBitmaps = new Dictionary<string, Bitmap>();
+
+                Parallel.For(0, packing.rectangles.Count, (k) =>
+                {
+                    var tag = (Sprite)packing.rectangles[k].tag;
+
+                    Bitmap srcBmp = null;
+
+                    lock (imageBitmaps)
+                    {
+                        if (!imageBitmaps.TryGetValue(imageFiles[tag.sheetFilename], out srcBmp))
+                        {
+                            try
+                            {
+                                srcBmp = new Bitmap(imageFiles[tag.sheetFilename]);
+                            }
+                            catch
+                            {
+                                Console.WriteLine();
+                                Console.WriteLine("Unable to load image <" + imageFiles[tag.sheetFilename] + ">.");
+                                goto next;
+                            }
+                            imageBitmaps.Add(imageFiles[tag.sheetFilename], srcBmp);
+                        }
+                    }
+
+                    lock (srcBmp)
+                    {
+                        var srcLockBits = srcBmp.LockBits(
+                            new Rectangle(0, 0, packing.rectangles[k].width, packing.rectangles[k].height),
+                            System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+                        var srcPixelPtr = (byte*)srcLockBits.Scan0.ToPointer();
+
+                        for (int j = 0; j < packing.rectangles[k].height; j++)
+                        {
+                            var readY = tag.y + (useCropInfo ? tag.cropTop : 0) + j;
+                            byte* readPtr = srcPixelPtr + readY * srcLockBits.Stride;
+
+                            var writeY = packing.rectangles[k].y + j;
+                            byte* writePtr = destPixelPtr + writeY * destLockBits.Stride;
+
+                            for (int i = 0; i < packing.rectangles[k].width; i++)
+                            {
+                                var readX = tag.x + (useCropInfo ? tag.cropLeft : 0) + i;
+                                var writeX = packing.rectangles[k].x + i;
+
+                                if (writeX >= 0 &&
+                                    writeY >= 0 &&
+                                    writeX < w &&
+                                    writeY < h)
+                                {
+                                    for (var p = 0; p < 4; p++)
+                                    {
+                                        writePtr[writeX * 4 + p] = readPtr[readX * 4 + p];
+                                    }
+                                }
+                            }
+                        }
+
+                        srcBmp.UnlockBits(srcLockBits);
+                    }
+
+                next:;
+                });
+
+                destBmp.UnlockBits(destLockBits);
             }
 
-            var imageBitmaps = new Dictionary<string, Bitmap>();
-            progress = 0;
-
-            for (int k = 0; k < packing.rectangles.Count; k++)
-            {
-                if (k > progress + packing.rectangles.Count / 20)
-                {
-                    progress += packing.rectangles.Count / 20;
-                    Console.Out.Write(".");
-                }
-
-                var tag = (Sprite)packing.rectangles[k].tag;
-
-                Bitmap img = null;
-                if (!imageBitmaps.TryGetValue(imageFiles[tag.sheetFilename], out img))
-                {
-                    try
-                    {
-                        img = new Bitmap(imageFiles[tag.sheetFilename]);
-                    }
-                    catch (Exception)
-                    {
-                        throw new Exception("Unable to load image <" + imageFiles[tag.sheetFilename] + ">.");
-                    }
-                    imageBitmaps.Add(imageFiles[tag.sheetFilename], img);
-                }
-
-                for (int j = 0; j < packing.rectangles[k].height; j++)
-                {
-                    for (int i = 0; i < packing.rectangles[k].width; i++)
-                    {
-                        pngpack.SetPixel(
-                            packing.rectangles[k].x + i,
-                            packing.rectangles[k].y + j,
-                            img.GetPixel(
-                                tag.x + (useCropInfo ? tag.cropLeft : 0) + i,
-                                tag.y + (useCropInfo ? tag.cropTop : 0) + j));
-                    }
-                }
-            }
-
-            pngpack.Save(filename);
+            destBmp.Save(filename);
         }
     }
 }
