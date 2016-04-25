@@ -43,8 +43,12 @@ namespace SpritePacker
 
         public bool TryFitting(int width, int height, out int x, out int y, bool printDebug = false, string debugName = null)
         {
-            System.Diagnostics.Trace.Assert(width > 0);
-            System.Diagnostics.Trace.Assert(height > 0);
+            if (width <= 0 || height <= 0)
+            {
+                x = 0;
+                y = 0;
+                return true;
+            }
 
             var accumX = 0;
             for (var i = 0; i < widths.Count; accumX += widths[i], i++)
@@ -109,8 +113,8 @@ namespace SpritePacker
 
         public void AddOccupation(int i, int j, int width, int height, bool printDebug = false, string debugName = null)
         {
-            System.Diagnostics.Trace.Assert(width > 0);
-            System.Diagnostics.Trace.Assert(height > 0);
+            if (width <= 0 || height <= 0)
+                return;
 
             if (printDebug)
             {

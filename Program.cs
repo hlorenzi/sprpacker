@@ -12,38 +12,40 @@ namespace SpritePacker
     {
         static void Main(string[] args)
         {
-            var parser = new Util.CommandParser();
-            parser.AddCommand("in", "The directory from where sprite sheets will be recursively fetched.", null);
-            parser.AddCommand("out", "The filename to be used for the exported files, without extension.", null);
-            parser.AddCommand("prefix", "A prefix to be inserted before sprite names.", "");
-            parser.AddCommand("use-folders", "Whether to use folder structure as a prefix for sprite names.", "on");
-            parser.AddCommand("max-size", "The maximum width and height of the exported images, in pixels.", "2048");
-            parser.AddCommand("margin", "The minimum space between any sprites, in pixels.", "1");
-            parser.AddCommand("use-crop-info", "Whether to use crop information in sprite sheets to save space.", "on");
-            parser.AddCommand("use-src-ext", "Whether to include the file extension in the \"src\" field.", "on");
-            parser.AddCommand("debug", "Whether to print debug information.", "off");
+            var parser = new Util.ParameterParser();
+            var paramIn = parser.Add("in", null, "The directory from where sprite sheets will be recursively fetched. May contain a path.");
+            var paramOut = parser.Add("out", null, "The filename to be used for the exported files, without extension. May contain a path. The file index and extension will be automatically appended.");
+            var paramPrefix = parser.Add("prefix", "", "A prefix to be inserted before sprite names.");
+            var paramUseFolders = parser.Add("use-folders", "on", "Whether to use folder structure as a prefix for sprite names.");
+            var paramMaxSize = parser.Add("max-size", "2048", "The maximum width and height of the exported images, in pixels.");
+            var paramMargin = parser.Add("margin", "1", "The minimum space between any sprites, in pixels.");
+            var paramUseCropInfo = parser.Add("use-crop-info", "on", "Whether to use crop information in sprite sheets to save space.");
+            var paramUseSrcExt = parser.Add("use-src-ext", "on", "Whether to include the file extension in the \"src\" field.");
+            var paramDebug = parser.Add("debug", "off", "Whether to print debug information.");
 
-            Console.Out.WriteLine("## SpritePacker v0.3");
-            Console.Out.WriteLine("## Written by Henrique Lorenzi, 18 dec 2015");
+            Console.Out.WriteLine("SpritePacker v0.5");
+            Console.Out.WriteLine("Copyright 2016 Henrique Lorenzi");
+            Console.Out.WriteLine("Build date: 25 apr 2016");
             Console.Out.WriteLine();
 
-            var commands = new Dictionary<string, string>();
-            if (!parser.ParseCommands(args, commands))
+            if (!parser.Parse(args) ||
+                !paramIn.HasValue() ||
+                !paramOut.HasValue())
             {
-                Console.Out.WriteLine("Commands:");
-                parser.PrintHelp();
+                Console.Out.WriteLine("Parameters:");
+                parser.PrintHelp("  ");
                 return;
             }
 
-            srcDir = Path.GetFullPath(commands["in"]);
-            outName = Path.GetFullPath(commands["out"]);
-            sprNamePrefix = commands["prefix"];
-            maxSize = int.Parse(commands["max-size"]);
-            margin = int.Parse(commands["margin"]);
-            useFolders = (commands["use-folders"] == "on");
-            useCropInfo = (commands["use-crop-info"] == "on");
-            useSrcExt = (commands["use-src-ext"] == "on");
-            debug = (commands["debug"] == "on");
+            srcDir = Path.GetFullPath(paramIn.GetString());
+            outName = Path.GetFullPath(paramOut.GetString());
+            sprNamePrefix = paramPrefix.GetString();
+            maxSize = paramMaxSize.GetInt();
+            margin = paramMargin.GetInt();
+            useFolders = paramUseFolders.GetBool();
+            useCropInfo = paramUseCropInfo.GetBool();
+            useSrcExt = paramUseSrcExt.GetBool();
+            debug = paramDebug.GetBool();
 
             var result = Export();
             if (result)
@@ -87,13 +89,6 @@ namespace SpritePacker
 
         public static bool Export()
         {
-            var delCount = 0;
-            while (File.Exists(outName + "_" + delCount + ".png"))
-            {
-                File.Delete(outName + "_" + delCount + ".png");
-                delCount++;
-            }
-
             var masterList = new List<string>();
             foreach (var file in Directory.GetFiles(srcDir, "*.sprsheet", SearchOption.AllDirectories))
             {
@@ -331,96 +326,104 @@ namespace SpritePacker
 
             Bitmap destBmp = new Bitmap(w, h);
 
-            unsafe
+            if (w != 0 && h != 0)
             {
-                var destLockBits = destBmp.LockBits(
-                    new Rectangle(0, 0, w, h),
-                    System.Drawing.Imaging.ImageLockMode.WriteOnly,
-                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-
-                byte* destPixelPtr = (byte*)destLockBits.Scan0.ToPointer();
-
-                Parallel.For(0, h, (j) =>
+                unsafe
                 {
-                    byte* writePtr = destPixelPtr + j * destLockBits.Stride;
+                    var destLockBits = destBmp.LockBits(
+                        new Rectangle(0, 0, w, h),
+                        System.Drawing.Imaging.ImageLockMode.WriteOnly,
+                        System.Drawing.Imaging.PixelFormat.Format32bppArgb);
 
-                    for (int i = 0; i < w; i++)
+                    byte* destPixelPtr = (byte*)destLockBits.Scan0.ToPointer();
+
+                    Parallel.For(0, h, (j) =>
                     {
-                        writePtr[i * 4 + 0] = 0;
-                        writePtr[i * 4 + 1] = 0;
-                        writePtr[i * 4 + 2] = 0;
-                        writePtr[i * 4 + 3] = 0;
-                    }
-                });
+                        byte* writePtr = destPixelPtr + j * destLockBits.Stride;
 
-                var imageBitmaps = new Dictionary<string, Bitmap>();
-
-                Parallel.For(0, packing.rectangles.Count, (k) =>
-                {
-                    var tag = (Sprite)packing.rectangles[k].tag;
-
-                    Bitmap srcBmp = null;
-
-                    lock (imageBitmaps)
-                    {
-                        if (!imageBitmaps.TryGetValue(imageFiles[tag.sheetFilename], out srcBmp))
+                        for (int i = 0; i < w; i++)
                         {
-                            try
-                            {
-                                srcBmp = new Bitmap(imageFiles[tag.sheetFilename]);
-                            }
-                            catch
-                            {
-                                Console.WriteLine();
-                                Console.WriteLine("Unable to load image <" + imageFiles[tag.sheetFilename] + ">.");
-                                goto next;
-                            }
-                            imageBitmaps.Add(imageFiles[tag.sheetFilename], srcBmp);
+                            writePtr[i * 4 + 0] = 0;
+                            writePtr[i * 4 + 1] = 0;
+                            writePtr[i * 4 + 2] = 0;
+                            writePtr[i * 4 + 3] = 0;
                         }
-                    }
+                    });
 
-                    lock (srcBmp)
+                    var imageBitmaps = new Dictionary<string, Bitmap>();
+
+                    Parallel.For(0, packing.rectangles.Count, (k) =>
                     {
-                        var srcLockBits = srcBmp.LockBits(
-                            new Rectangle(0, 0, packing.rectangles[k].width, packing.rectangles[k].height),
-                            System.Drawing.Imaging.ImageLockMode.ReadOnly,
-                            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                        var tag = (Sprite)packing.rectangles[k].tag;
 
-                        var srcPixelPtr = (byte*)srcLockBits.Scan0.ToPointer();
+                        Bitmap srcBmp = null;
 
-                        for (int j = 0; j < packing.rectangles[k].height; j++)
+                        lock (imageBitmaps)
                         {
-                            var readY = tag.y + (useCropInfo ? tag.cropTop : 0) + j;
-                            byte* readPtr = srcPixelPtr + readY * srcLockBits.Stride;
-
-                            var writeY = packing.rectangles[k].y + j;
-                            byte* writePtr = destPixelPtr + writeY * destLockBits.Stride;
-
-                            for (int i = 0; i < packing.rectangles[k].width; i++)
+                            if (!imageBitmaps.TryGetValue(imageFiles[tag.sheetFilename], out srcBmp))
                             {
-                                var readX = tag.x + (useCropInfo ? tag.cropLeft : 0) + i;
-                                var writeX = packing.rectangles[k].x + i;
-
-                                if (writeX >= 0 &&
-                                    writeY >= 0 &&
-                                    writeX < w &&
-                                    writeY < h)
+                                try
                                 {
-                                    for (var p = 0; p < 4; p++)
+                                    srcBmp = new Bitmap(imageFiles[tag.sheetFilename]);
+                                }
+                                catch
+                                {
+                                    Console.WriteLine();
+                                    Console.WriteLine("Unable to load image <" + imageFiles[tag.sheetFilename] + ">.");
+                                    goto next;
+                                }
+                                imageBitmaps.Add(imageFiles[tag.sheetFilename], srcBmp);
+                            }
+                        }
+
+                        lock (srcBmp)
+                        {
+                            if (srcBmp.Width <= 0 || srcBmp.Height <= 0 ||
+                                packing.rectangles[k].width <= 0 ||
+                                packing.rectangles[k].height <= 0)
+                                goto next;
+
+                            var srcLockBits = srcBmp.LockBits(
+                                new Rectangle(0, 0, packing.rectangles[k].width, packing.rectangles[k].height),
+                                System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+                            var srcPixelPtr = (byte*)srcLockBits.Scan0.ToPointer();
+
+                            for (int j = 0; j < packing.rectangles[k].height; j++)
+                            {
+                                var readY = tag.y + (useCropInfo ? tag.cropTop : 0) + j;
+                                byte* readPtr = srcPixelPtr + readY * srcLockBits.Stride;
+
+                                var writeY = packing.rectangles[k].y + j;
+                                byte* writePtr = destPixelPtr + writeY * destLockBits.Stride;
+
+                                for (int i = 0; i < packing.rectangles[k].width; i++)
+                                {
+                                    var readX = tag.x + (useCropInfo ? tag.cropLeft : 0) + i;
+                                    var writeX = packing.rectangles[k].x + i;
+
+                                    if (writeX >= 0 &&
+                                        writeY >= 0 &&
+                                        writeX < w &&
+                                        writeY < h)
                                     {
-                                        writePtr[writeX * 4 + p] = readPtr[readX * 4 + p];
+                                        for (var p = 0; p < 4; p++)
+                                        {
+                                            writePtr[writeX * 4 + p] = readPtr[readX * 4 + p];
+                                        }
                                     }
                                 }
                             }
+
+                            srcBmp.UnlockBits(srcLockBits);
                         }
 
-                        srcBmp.UnlockBits(srcLockBits);
-                    }
+                    next:;
+                    });
 
-                next:;
-                });
-
-                destBmp.UnlockBits(destLockBits);
+                    destBmp.UnlockBits(destLockBits);
+                }
             }
 
             destBmp.Save(filename);
