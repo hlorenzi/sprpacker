@@ -19,13 +19,14 @@ namespace SpritePacker
             var paramUseFolders = parser.Add("use-folders", "on", "Whether to use folder structure as a prefix for sprite names.");
             var paramMaxSize = parser.Add("max-size", "2048", "The maximum width and height of the exported images, in pixels.");
             var paramMargin = parser.Add("margin", "1", "The minimum space between any sprites, in pixels.");
-            var paramUseCropInfo = parser.Add("use-crop-info", "on", "Whether to use crop information in sprite sheets to save space.");
+            var paramBleedingMargin = parser.Add("bleeding-margin", "0", "The margin in which to extend the border colors of sprites, in pixels.");
+            var paramCrop = parser.Add("crop", "on", "Crop transparent sprite areas to save space.");
             var paramUseSrcExt = parser.Add("use-src-ext", "on", "Whether to include the file extension in the \"src\" field.");
             var paramDebug = parser.Add("debug", "off", "Whether to print debug information.");
 
-            Console.Out.WriteLine("SpritePacker v0.5");
+            Console.Out.WriteLine("SpritePacker v0.7");
             Console.Out.WriteLine("Copyright 2016 Henrique Lorenzi");
-            Console.Out.WriteLine("Build date: 25 apr 2016");
+            Console.Out.WriteLine("Build date: 29 apr 2016");
             Console.Out.WriteLine();
 
             if (!parser.Parse(args) ||
@@ -42,8 +43,9 @@ namespace SpritePacker
             sprNamePrefix = paramPrefix.GetString();
             maxSize = paramMaxSize.GetInt();
             margin = paramMargin.GetInt();
+            bleedingMargin = paramBleedingMargin.GetInt();
             useFolders = paramUseFolders.GetBool();
-            useCropInfo = paramUseCropInfo.GetBool();
+            crop = paramCrop.GetBool();
             useSrcExt = paramUseSrcExt.GetBool();
             debug = paramDebug.GetBool();
 
@@ -62,8 +64,9 @@ namespace SpritePacker
         private static string sprNamePrefix;
         private static int maxSize;
         private static int margin;
+        private static int bleedingMargin;
         private static bool useFolders;
-        private static bool useCropInfo;
+        private static bool crop;
         private static bool useSrcExt;
         private static bool debug;
 
@@ -79,6 +82,7 @@ namespace SpritePacker
         private class Sprite
         {
             public string sheetFilename;
+            public string sheetImageFilename;
             public string spriteLocalName;
             public string spriteFullName;
             public int x, y, width, height;
@@ -104,22 +108,25 @@ namespace SpritePacker
                 s.WriteLine("[");
                 s.Indent();
 
-                var count = 0.0f;
-                Console.Out.WriteLine("Reading sprites...");
+                Console.Out.WriteLine("Reading sprite sheets...");
 
                 var spritesToExport = new List<Sprite>();
-                var imageFiles = new Dictionary<string, string>();
-                foreach (var sheet in masterList)
+                Parallel.For(0, masterList.Count, (i) =>
                 {
-                    GetSheetSprites(imageFiles, spritesToExport, PathUtil.MakeAbsolutePath(srcDir, sheet));
-                    count += 1.0f;
-                }
+                    var sheetSprites = LoadSheetFile(PathUtil.MakeAbsolutePath(srcDir, masterList[i]));
+                    lock (spritesToExport)
+                    {
+                        spritesToExport.AddRange(sheetSprites);
+                    }
+                });
+                Console.Out.WriteLine("Found " + spritesToExport.Count + " sprites.");
+                Console.Out.WriteLine();
 
                 spritesToExport.Sort((a, b) =>
-                    ((b.width - (useCropInfo ? b.cropLeft + b.cropRight : 0)) *
-                     (b.height - (useCropInfo ? b.cropTop + b.cropBottom : 0))) -
-                     ((a.width - (useCropInfo ? a.cropLeft + a.cropRight : 0)) *
-                     (a.height - (useCropInfo ? a.cropTop + a.cropBottom : 0))));
+                    ((b.width - (crop ? b.cropLeft + b.cropRight : 0)) *
+                     (b.height - (crop ? b.cropTop + b.cropBottom : 0))) -
+                     ((a.width - (crop ? a.cropLeft + a.cropRight : 0)) *
+                     (a.height - (crop ? a.cropTop + a.cropBottom : 0))));
 
                 var spritesToExportNum = spritesToExport.Count;
                 var maxArea = maxSize * maxSize;
@@ -140,7 +147,7 @@ namespace SpritePacker
                     Console.Out.WriteLine("Writing image file...");
 
                     ExportPackFile(
-                        packing, imageFiles,
+                        packing,
                         outName + "_" + exportCount + ".png");
 
                     for (int r = 0; r < packing.rectangles.Count; r++)
@@ -153,11 +160,11 @@ namespace SpritePacker
 
                         s.WriteLine("\"name\": \"" + spr.spriteFullName + "\",");
                         s.WriteLine("\"src\": \"" + Path.GetFileName(outName) + "_" + exportCount + (useSrcExt ? ".png" : "") + "\",");
-                        s.WriteLine("\"x\": " + rect.x + ",");
-                        s.WriteLine("\"y\": " + rect.y + ",");
+                        s.WriteLine("\"x\": " + (rect.x + bleedingMargin) + ",");
+                        s.WriteLine("\"y\": " + (rect.y + bleedingMargin) + ",");
                         s.WriteLine("\"width\": " + rect.width + ",");
                         s.WriteLine("\"height\": " + rect.height + ",");
-                        if (useCropInfo)
+                        if (crop)
                         {
                             s.WriteLine("\"crop-left\": " + spr.cropLeft + ",");
                             s.WriteLine("\"crop-right\": " + spr.cropRight + ",");
@@ -229,15 +236,20 @@ namespace SpritePacker
             return true;
         }
 
-        private static void GetSheetSprites(Dictionary<string, string> imgs, List<Sprite> list, string filename)
+        private static List<Sprite> LoadSheetFile(string filename)
         {
-            var pathName =
+            var sprites = new List<Sprite>();
+
+            var spriteFullNamePathPrefix =
                 (Path.GetDirectoryName(PathUtil.MakeRelativePath(srcDir + Path.DirectorySeparatorChar, filename)) +
                 Path.DirectorySeparatorChar).
                 Replace(Path.DirectorySeparatorChar, '/');
 
-            if (pathName == "/")
-                pathName = "";
+            if (spriteFullNamePathPrefix == "/")
+                spriteFullNamePathPrefix = "";
+
+            if (!useFolders)
+                spriteFullNamePathPrefix = "";
 
             using (var f = new FileStream(filename, FileMode.Open))
             {
@@ -245,8 +257,14 @@ namespace SpritePacker
                 xml.Load(f);
 
                 var nodeSpriteSheet = xml.GetElementsByTagName("sprite-sheet")[0];
-                imgs.Add(filename, PathUtil.MakeAbsolutePath(Path.GetDirectoryName(filename), nodeSpriteSheet.Attributes["src"].Value));
 
+                var sheetSrcImageFile = PathUtil.MakeAbsolutePath(Path.GetDirectoryName(filename), nodeSpriteSheet.Attributes["src"].Value);
+                var sheetBitmap = new Bitmap(sheetSrcImageFile);
+                var sheetBitmapBits = sheetBitmap.LockBits(
+                    new Rectangle(0, 0, sheetBitmap.Width, sheetBitmap.Height),
+                    System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                    System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                
                 for (int i = 0; i < nodeSpriteSheet.ChildNodes.Count; i++)
                 {
                     var node = nodeSpriteSheet.ChildNodes[i];
@@ -254,36 +272,49 @@ namespace SpritePacker
                     {
                         var spr = new Sprite();
                         spr.sheetFilename = filename;
+                        spr.sheetImageFilename = sheetSrcImageFile;
                         spr.spriteLocalName = node.Attributes["name"].Value.ToLower();
-                        spr.spriteFullName = (sprNamePrefix + (useFolders ? pathName : "") + spr.spriteLocalName).ToLower();
+                        spr.spriteFullName = (sprNamePrefix + spriteFullNamePathPrefix + spr.spriteLocalName).ToLower();
                         spr.x = Convert.ToInt32(node.Attributes["x"].Value);
                         spr.y = Convert.ToInt32(node.Attributes["y"].Value);
                         spr.width = Convert.ToInt32(node.Attributes["width"].Value);
                         spr.height = Convert.ToInt32(node.Attributes["height"].Value);
-                        if (node.Attributes["crop-left"] != null)
-                        {
-                            spr.cropLeft = Convert.ToInt32(node.Attributes["crop-left"].Value);
-                            spr.cropRight = Convert.ToInt32(node.Attributes["crop-right"].Value);
-                            spr.cropTop = Convert.ToInt32(node.Attributes["crop-top"].Value);
-                            spr.cropBottom = Convert.ToInt32(node.Attributes["crop-bottom"].Value);
-                        }
+
+                        FindCroppableArea(sheetBitmapBits,
+                            spr.x, spr.y, spr.width, spr.height,
+                            out spr.cropLeft, out spr.cropRight, out spr.cropTop, out spr.cropBottom);
 
                         foreach (XmlNode data in node.ChildNodes)
                         {
                             var dataObj = new DataObject();
                             dataObj.name = data.LocalName;
+
                             foreach (XmlAttribute attrb in data.Attributes)
                             {
                                 dataObj.attributeNames.Add(attrb.Name);
                                 dataObj.attributeValues.Add(attrb.Value);
+
+                                if (dataObj.name == "guide" && attrb.Name == "name" && attrb.Value == "only-guides")
+                                {
+                                    spr.width = 1;
+                                    spr.height = 1;
+                                    spr.cropLeft = 0;
+                                    spr.cropRight = 0;
+                                    spr.cropTop = 0;
+                                    spr.cropBottom = 0;
+                                }
                             }
                             spr.dataObjects.Add(dataObj);
                         }
 
-                        list.Add(spr);
+                        sprites.Add(spr);
                     }
                 }
+
+                sheetBitmap.UnlockBits(sheetBitmapBits);
             }
+
+            return sprites;
         }
 
 
@@ -294,14 +325,14 @@ namespace SpritePacker
             foreach (var spr in sprites)
             {
                 var rect = new RectanglePacker.Rectangle();
-                rect.width = spr.width - (useCropInfo ? (spr.cropLeft + spr.cropRight) : 0);
-                rect.height = spr.height - (useCropInfo ? (spr.cropTop + spr.cropBottom) : 0);
+                rect.width = spr.width - (crop ? (spr.cropLeft + spr.cropRight) : 0);
+                rect.height = spr.height - (crop ? (spr.cropTop + spr.cropBottom) : 0);
                 rect.tag = spr;
                 rect.debugName = spr.spriteFullName;
                 rectList.Add(rect);
             }
 
-            var packing = RectanglePacker.PackAsManyAsPossible(margin, maxSize, maxSize, rectList, debug);
+            var packing = RectanglePacker.PackAsManyAsPossible(margin + bleedingMargin * 2, maxSize, maxSize, rectList, debug);
             if (packing == null || packing.rectangles.Count == 0)
                 return null;
 
@@ -319,7 +350,7 @@ namespace SpritePacker
         }
 
 
-        private static void ExportPackFile(RectanglePacker.Packing packing, Dictionary<string, string> imageFiles, string filename)
+        private static void ExportPackFile(RectanglePacker.Packing packing, string filename)
         {
             var w = packing.totalWidth;
             var h = packing.totalHeight;
@@ -360,19 +391,19 @@ namespace SpritePacker
 
                         lock (imageBitmaps)
                         {
-                            if (!imageBitmaps.TryGetValue(imageFiles[tag.sheetFilename], out srcBmp))
+                            if (!imageBitmaps.TryGetValue(tag.sheetImageFilename, out srcBmp))
                             {
                                 try
                                 {
-                                    srcBmp = new Bitmap(imageFiles[tag.sheetFilename]);
+                                    srcBmp = new Bitmap(tag.sheetImageFilename);
                                 }
                                 catch
                                 {
                                     Console.WriteLine();
-                                    Console.WriteLine("Unable to load image <" + imageFiles[tag.sheetFilename] + ">.");
+                                    Console.WriteLine("Unable to load image <" + tag.sheetImageFilename + ">.");
                                     goto next;
                                 }
-                                imageBitmaps.Add(imageFiles[tag.sheetFilename], srcBmp);
+                                imageBitmaps.Add(tag.sheetImageFilename, srcBmp);
                             }
                         }
 
@@ -388,31 +419,73 @@ namespace SpritePacker
                                 System.Drawing.Imaging.ImageLockMode.ReadOnly,
                                 System.Drawing.Imaging.PixelFormat.Format32bppArgb);
 
-                            var srcPixelPtr = (byte*)srcLockBits.Scan0.ToPointer();
+                            var srcX = tag.x + (crop ? tag.cropLeft : 0);
+                            var srcY = tag.y + (crop ? tag.cropTop : 0);
+                            var destX = packing.rectangles[k].x + bleedingMargin;
+                            var destY = packing.rectangles[k].y + bleedingMargin;
 
+                            // Write sprite image.
                             for (int j = 0; j < packing.rectangles[k].height; j++)
                             {
-                                var readY = tag.y + (useCropInfo ? tag.cropTop : 0) + j;
-                                byte* readPtr = srcPixelPtr + readY * srcLockBits.Stride;
+                                for (int i = 0; i < packing.rectangles[k].width; i++)
+                                {
+                                    TransferPixel(
+                                        srcLockBits, destLockBits,
+                                        srcX + i, srcY + j,
+                                        destX + i, destY + j);
+                                }
+                            }
 
-                                var writeY = packing.rectangles[k].y + j;
-                                byte* writePtr = destPixelPtr + writeY * destLockBits.Stride;
+                            // Write color bleeding.
+                            for (int b = 0; b < bleedingMargin; b++)
+                            {
+                                for (int j = 0; j < packing.rectangles[k].height; j++)
+                                {
+                                    TransferPixel(
+                                        srcLockBits, destLockBits,
+                                        srcX, srcY + j,
+                                        destX - 1 - b, destY + j);
+
+                                    TransferPixel(
+                                        srcLockBits, destLockBits,
+                                        srcX + packing.rectangles[k].width - 1, srcY + j,
+                                        destX + packing.rectangles[k].width + b, destY + j);
+                                }
 
                                 for (int i = 0; i < packing.rectangles[k].width; i++)
                                 {
-                                    var readX = tag.x + (useCropInfo ? tag.cropLeft : 0) + i;
-                                    var writeX = packing.rectangles[k].x + i;
+                                    TransferPixel(
+                                        srcLockBits, destLockBits,
+                                        srcX + i, srcY,
+                                        destX + i, destY - 1 - b);
 
-                                    if (writeX >= 0 &&
-                                        writeY >= 0 &&
-                                        writeX < w &&
-                                        writeY < h)
-                                    {
-                                        for (var p = 0; p < 4; p++)
-                                        {
-                                            writePtr[writeX * 4 + p] = readPtr[readX * 4 + p];
-                                        }
-                                    }
+                                    TransferPixel(
+                                        srcLockBits, destLockBits,
+                                        srcX + i, srcY + packing.rectangles[k].height - 1,
+                                        destX + i, destY + packing.rectangles[k].height + b);
+                                }
+
+                                for (int c = 0; c < bleedingMargin; c++)
+                                {
+                                    TransferPixel(
+                                        srcLockBits, destLockBits,
+                                        srcX, srcY,
+                                        destX - 1 - b, destY - 1 - c);
+
+                                    TransferPixel(
+                                        srcLockBits, destLockBits,
+                                        srcX + packing.rectangles[k].width - 1, srcY,
+                                        destX + packing.rectangles[k].width + b, destY - 1 - c);
+
+                                    TransferPixel(
+                                        srcLockBits, destLockBits,
+                                        srcX, srcY + packing.rectangles[k].height - 1,
+                                        destX - 1 - b, destY + packing.rectangles[k].height + c);
+
+                                    TransferPixel(
+                                        srcLockBits, destLockBits,
+                                        srcX + packing.rectangles[k].width - 1, srcY + packing.rectangles[k].height - 1,
+                                        destX + packing.rectangles[k].width + b, destY + packing.rectangles[k].height + c);
                                 }
                             }
 
@@ -427,6 +500,78 @@ namespace SpritePacker
             }
 
             destBmp.Save(filename);
+        }
+
+
+        private static unsafe void TransferPixel(
+            System.Drawing.Imaging.BitmapData src,
+            System.Drawing.Imaging.BitmapData dest,
+            int srcX, int srcY,
+            int destX, int destY)
+        {
+            if (destX < 0 || destY < 0 || destX >= dest.Width || destY >= dest.Height)
+                return;
+
+            byte* srcPtr = (byte*)src.Scan0.ToPointer() + srcY * src.Stride + srcX * 4;
+            byte* destPtr = (byte*)dest.Scan0.ToPointer() + destY * dest.Stride + destX * 4;
+
+            destPtr[0] = srcPtr[0];
+            destPtr[1] = srcPtr[1];
+            destPtr[2] = srcPtr[2];
+            destPtr[3] = srcPtr[3];
+        }
+
+
+        private static unsafe void FindCroppableArea(
+            System.Drawing.Imaging.BitmapData src,
+            int x, int y, int width, int height,
+            out int left, out int right, out int top, out int bottom)
+        {
+            right = 0;
+            while (right < width && IsColumnCroppable(src, x + width - right - 1, y, height))
+                right++;
+
+            left = 0;
+            while (left + right < width && IsColumnCroppable(src, x + left + 1, y, height))
+                left++;
+
+            bottom = 0;
+            while (bottom < height && IsRowCroppable(src, y + height - bottom - 1, x, width))
+                bottom++;
+
+            top = 0;
+            while (top + bottom < height && IsRowCroppable(src, y + top + 1, x, width))
+                top++;
+        }
+
+
+        private static unsafe bool IsColumnCroppable(
+            System.Drawing.Imaging.BitmapData src,
+            int x, int y, int height)
+        {
+            for (var j = 0; j < height; j++)
+            {
+                byte* srcPtr = (byte*)src.Scan0.ToPointer() + (y + j) * src.Stride + x * 4;
+                if (srcPtr[3] != 0)
+                    return false;
+            }
+
+            return true;
+        }
+
+
+        private static unsafe bool IsRowCroppable(
+            System.Drawing.Imaging.BitmapData src,
+            int y, int x, int width)
+        {
+            for (var i = 0; i < width; i++)
+            {
+                byte* srcPtr = (byte*)src.Scan0.ToPointer() + y * src.Stride + (x + i) * 4;
+                if (srcPtr[3] != 0)
+                    return false;
+            }
+
+            return true;
         }
     }
 }
