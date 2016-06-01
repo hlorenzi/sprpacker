@@ -20,13 +20,15 @@ namespace SpritePacker
             var paramPrefix = parser.Add("prefix", "", "A prefix to be inserted before sprite names.");
             var paramUseFolders = parser.Add("use-folders", "on", "Whether to use folder structure as a prefix for sprite names.");
             var paramMaxSize = parser.Add("max-size", "2048", "The maximum width and height of the exported images, in pixels.");
+            var paramMinimizeSize = parser.Add("minimize-size", "on", "Whether to crop exported image sizes, when there's leftover space.");
+            var paramMinimizePOT = parser.Add("minimize-pot", "off", "Whether to restrict exported image sizes to power-of-two values.");
             var paramMargin = parser.Add("margin", "1", "The minimum space between any sprites, in pixels.");
             var paramBleedingMargin = parser.Add("bleeding-margin", "0", "The margin in which to extend the border colors of sprites, in pixels.");
             var paramCrop = parser.Add("crop", "on", "Crop transparent sprite areas to save space.");
             var paramUseSrcExt = parser.Add("use-src-ext", "on", "Whether to include the file extension in the \"src\" field.");
             var paramDebug = parser.Add("debug", "off", "Whether to print debug information.");
 
-            Console.Out.WriteLine("SpritePacker v0.7");
+            Console.Out.WriteLine("SpritePacker v0.8");
             Console.Out.WriteLine("Copyright 2016 Henrique Lorenzi");
             Console.Out.WriteLine("Build date: 01 jun 2016");
             Console.Out.WriteLine();
@@ -56,6 +58,8 @@ namespace SpritePacker
 
             sprNamePrefix = paramPrefix.GetString();
             maxSize = paramMaxSize.GetInt();
+            minimizeSize = paramMinimizeSize.GetBool();
+            minimizePOT = paramMinimizePOT.GetBool();
             margin = paramMargin.GetInt();
             bleedingMargin = paramBleedingMargin.GetInt();
             useFolders = paramUseFolders.GetBool();
@@ -78,6 +82,8 @@ namespace SpritePacker
         private static Dictionary<string, List<string>> outGroups;
         private static string sprNamePrefix;
         private static int maxSize;
+        private static bool minimizeSize;
+        private static bool minimizePOT;
         private static int margin;
         private static int bleedingMargin;
         private static bool useFolders;
@@ -245,6 +251,8 @@ namespace SpritePacker
 
                         exportCount++;
                     }
+
+                    Console.Out.WriteLine("");
                 }
 
                 s.Unindent();
@@ -374,7 +382,52 @@ namespace SpritePacker
 
         private static RectanglePacker.Packing TryPacking(List<Sprite> sprites, int maxSize)
         {
-            var rectList = new List<RectanglePacker.Rectangle>();
+            var packingSquare = Pack(sprites, maxSize, maxSize);
+            if (packingSquare == null)
+                return null;
+
+            if (minimizeSize)
+            {
+                // Search square images.
+                if (!minimizePOT)
+                {
+                    var lower = 0;
+                    var upper = maxSize;
+                    while (lower < upper)
+                    {
+                        var middle = (lower + upper) / 2;
+
+                        var pack = Pack(sprites, middle, middle);
+                        if (pack != null && pack.rectangles.Count == packingSquare.rectangles.Count)
+                        {
+                            packingSquare = pack;
+                            upper = middle;
+                        }
+                        else
+                            lower = middle + 1;
+                    }
+                }
+            }
+
+            return packingSquare;
+        }
+
+
+        private static RectanglePacker.Packing Pack(List<Sprite> sprites, int width, int height)
+        {
+            var rectList = MakeSpriteRectangles(sprites);
+
+            var packingFull = RectanglePacker.PackAsManyAsPossible(margin + bleedingMargin * 2, width, height, rectList, debug);
+            if (packingFull == null || packingFull.rectangles.Count == 0)
+                return null;
+
+            return packingFull;
+        }
+
+
+        private static List<RectanglePacker.Rectangle> MakeSpriteRectangles(List<Sprite> sprites)
+        {
+            var rects = new List<RectanglePacker.Rectangle>();
 
             foreach (var spr in sprites)
             {
@@ -383,24 +436,10 @@ namespace SpritePacker
                 rect.height = spr.height - (crop ? (spr.cropTop + spr.cropBottom) : 0);
                 rect.tag = spr;
                 rect.debugName = spr.spriteFullName;
-                rectList.Add(rect);
+                rects.Add(rect);
             }
 
-            var packing = RectanglePacker.PackAsManyAsPossible(margin + bleedingMargin * 2, maxSize, maxSize, rectList, debug);
-            if (packing == null || packing.rectangles.Count == 0)
-                return null;
-
-            // FIXME: PackAll is overwriting rectangle positions.
-            /*for (var curSize = maxSize; curSize >= 8; curSize /= 2)
-            {
-                var newPacking = RectanglePacker.PackAll(margin, maxSize, maxSize, packing.rectangles, debug);
-                if (newPacking == null || newPacking.rectangles.Count == 0)
-                    break;
-
-                packing = newPacking;
-            }*/
-
-            return packing;
+            return rects;
         }
 
 
