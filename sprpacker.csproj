@@ -46,6 +46,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ExportGroups.cs" />
     <Compile Include="IndentedStream.cs" />
     <Compile Include="OccupationMatrix.cs" />
     <Compile Include="ParameterParser.cs" />
