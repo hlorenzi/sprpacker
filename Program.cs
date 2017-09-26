@@ -28,9 +28,9 @@ namespace SpritePacker
             var paramUseSrcExt = parser.Add("use-src-ext", "on", "Whether to include the file extension in the \"src\" field.");
             var paramDebug = parser.Add("debug", "off", "Whether to print debug information.");
 
-            Console.Out.WriteLine("SpritePacker v0.8");
+            Console.Out.WriteLine("SpritePacker v0.9");
             Console.Out.WriteLine("Copyright 2016 Henrique Lorenzi");
-            Console.Out.WriteLine("Build date: 01 jun 2016");
+            Console.Out.WriteLine("Build date: 26 sep 2017");
             Console.Out.WriteLine();
 
             if (!parser.Parse(args) ||
@@ -120,6 +120,8 @@ namespace SpritePacker
                 masterList.Add(PathUtil.MakeRelativePath(srcDir + Path.DirectorySeparatorChar, file));
             }
 
+            var success = true;
+
             using (var f = new FileStream(outDir + "export.json", FileMode.Create))
             {
                 var s = new IndentedStream(f, "\t");
@@ -140,16 +142,22 @@ namespace SpritePacker
                         allSprites.AddRange(sheetSprites);
                     }
                 });
-                Console.Out.WriteLine("Found " + allSprites.Count + " sprites.");
+                Console.Out.WriteLine("Found " + allSprites.Count + " sprites total.");
                 Console.Out.WriteLine();
 
                 var groupedSprites = GroupSprites(allSprites);
 
                 foreach (var pair in groupedSprites)
+                    Console.Out.WriteLine("Found " + pair.Value.Count + " sprites under <" + pair.Key + ">...");
+
+                Console.Out.WriteLine();
+
+                var writeJsonLock = new object();
+
+                Parallel.ForEach(groupedSprites, (pair) =>
                 {
                     var groupName = pair.Key;
                     var spriteList = pair.Value;
-                    Console.Out.WriteLine("Exporting " + spriteList.Count + " sprites under <" + groupName + ">...");
 
                     spriteList.Sort((a, b) =>
                         ((b.width - (crop ? b.cropLeft + b.cropRight : 0)) *
@@ -165,95 +173,99 @@ namespace SpritePacker
                     {
                         var packing = TryPacking(spriteList, maxSize);
                         if (packing == null || packing.rectangles.Count == 0)
-                            return false;
+                        {
+                            success = false;
+                            return;
+                        }
 
                         foreach (var rect in packing.rectangles)
                             spriteList.Remove((Sprite)rect.tag);
-
-                        Console.Out.WriteLine("  Pack " + (exportCount + 1) + ": " + packing.rectangles.Count + " sprites.");
 
                         ExportPackFile(
                             packing,
                             Path.GetFullPath(outDir + groupName) + "_" + exportCount + ".png");
 
-                        for (int r = 0; r < packing.rectangles.Count; r++)
+                        lock (writeJsonLock)
                         {
-                            var rect = packing.rectangles[r];
+                            Console.Out.WriteLine("Exporting <" + groupName + "> pack #" + (exportCount + 1) + ": " + packing.rectangles.Count + " sprites.");
 
-                            var spr = (Sprite)rect.tag;
-                            s.WriteLine("{");
-                            s.Indent();
-
-                            s.WriteLine("\"name\": \"" + spr.spriteFullName + "\",");
-                            s.WriteLine("\"src\": \"" + groupName + "_" + exportCount + (useSrcExt ? ".png" : "") + "\",");
-                            s.WriteLine("\"x\": " + (rect.x + bleedingMargin) + ",");
-                            s.WriteLine("\"y\": " + (rect.y + bleedingMargin) + ",");
-                            s.WriteLine("\"width\": " + rect.width + ",");
-                            s.WriteLine("\"height\": " + rect.height + ",");
-                            if (crop)
+                            for (int r = 0; r < packing.rectangles.Count; r++)
                             {
-                                s.WriteLine("\"crop-left\": " + spr.cropLeft + ",");
-                                s.WriteLine("\"crop-right\": " + spr.cropRight + ",");
-                                s.WriteLine("\"crop-top\": " + spr.cropTop + ",");
-                                s.WriteLine("\"crop-bottom\": " + spr.cropBottom + ",");
-                            }
-                            else
-                            {
-                                s.WriteLine("\"crop-left\": 0,");
-                                s.WriteLine("\"crop-right\": 0,");
-                                s.WriteLine("\"crop-top\": 0,");
-                                s.WriteLine("\"crop-bottom\": 0,");
-                            }
+                                var rect = packing.rectangles[r];
 
-                            s.WriteLine("\"guides\":");
-                            s.WriteLine("[");
-                            s.Indent();
-                            for (int j = 0; j < spr.dataObjects.Count; j++)
-                            {
-                                var dataObj = spr.dataObjects[j];
-
+                                var spr = (Sprite)rect.tag;
                                 s.WriteLine("{");
                                 s.Indent();
-                                for (int i = 0; i < dataObj.attributeNames.Count; i++)
+
+                                s.WriteLine("\"name\": \"" + spr.spriteFullName + "\",");
+                                s.WriteLine("\"src\": \"" + groupName + "_" + exportCount + (useSrcExt ? ".png" : "") + "\",");
+                                s.WriteLine("\"x\": " + (rect.x + bleedingMargin) + ",");
+                                s.WriteLine("\"y\": " + (rect.y + bleedingMargin) + ",");
+                                s.WriteLine("\"width\": " + rect.width + ",");
+                                s.WriteLine("\"height\": " + rect.height + ",");
+                                if (crop)
                                 {
-                                    var attrbName = dataObj.attributeNames[i];
-                                    var attrbValue = dataObj.attributeValues[i];
+                                    s.WriteLine("\"crop-left\": " + spr.cropLeft + ",");
+                                    s.WriteLine("\"crop-right\": " + spr.cropRight + ",");
+                                    s.WriteLine("\"crop-top\": " + spr.cropTop + ",");
+                                    s.WriteLine("\"crop-bottom\": " + spr.cropBottom + ",");
+                                }
+                                else
+                                {
+                                    s.WriteLine("\"crop-left\": 0,");
+                                    s.WriteLine("\"crop-right\": 0,");
+                                    s.WriteLine("\"crop-top\": 0,");
+                                    s.WriteLine("\"crop-bottom\": 0,");
+                                }
 
-                                    var attrbStr = "\"" + attrbName + "\": ";
-                                    if (attrbName == "x" || attrbName == "y" ||
-                                        attrbName == "x1" || attrbName == "y1" ||
-                                        attrbName == "x2" || attrbName == "y2" ||
-                                        attrbName == "x-min" || attrbName == "y-min" ||
-                                        attrbName == "x-max" || attrbName == "y-max" ||
-                                        attrbName == "value")
-                                        attrbStr += attrbValue;
-                                    else
-                                        attrbStr += "\"" + attrbValue + "\"";
+                                s.WriteLine("\"guides\":");
+                                s.WriteLine("[");
+                                s.Indent();
+                                for (int j = 0; j < spr.dataObjects.Count; j++)
+                                {
+                                    var dataObj = spr.dataObjects[j];
 
-                                    if (i < dataObj.attributeNames.Count - 1)
-                                        attrbStr += ",";
+                                    s.WriteLine("{");
+                                    s.Indent();
+                                    for (int i = 0; i < dataObj.attributeNames.Count; i++)
+                                    {
+                                        var attrbName = dataObj.attributeNames[i];
+                                        var attrbValue = dataObj.attributeValues[i];
 
-                                    s.WriteLine(attrbStr);
+                                        var attrbStr = "\"" + attrbName + "\": ";
+                                        if (attrbName == "x" || attrbName == "y" ||
+                                            attrbName == "x1" || attrbName == "y1" ||
+                                            attrbName == "x2" || attrbName == "y2" ||
+                                            attrbName == "x-min" || attrbName == "y-min" ||
+                                            attrbName == "x-max" || attrbName == "y-max" ||
+                                            attrbName == "value")
+                                            attrbStr += attrbValue;
+                                        else
+                                            attrbStr += "\"" + attrbValue + "\"";
+
+                                        if (i < dataObj.attributeNames.Count - 1)
+                                            attrbStr += ",";
+
+                                        s.WriteLine(attrbStr);
+                                    }
+                                    s.Unindent();
+                                    s.WriteLine("}" + (j < spr.dataObjects.Count - 1 ? "," : ""));
                                 }
                                 s.Unindent();
-                                s.WriteLine("}" + (j < spr.dataObjects.Count - 1 ? "," : ""));
+                                s.WriteLine("]");
+
+                                s.Unindent();
+
+                                if (r == packing.rectangles.Count - 1 && allSprites.Count == 0)
+                                    s.WriteLine("}");
+                                else
+                                    s.WriteLine("},");
                             }
-                            s.Unindent();
-                            s.WriteLine("]");
-
-                            s.Unindent();
-
-                            if (r == packing.rectangles.Count - 1 && allSprites.Count == 0)
-                                s.WriteLine("}");
-                            else
-                                s.WriteLine("},");
                         }
 
                         exportCount++;
                     }
-
-                    Console.Out.WriteLine("");
-                }
+                });
 
                 s.Unindent();
                 s.WriteLine("]");
@@ -261,7 +273,7 @@ namespace SpritePacker
                 s.WriteLine("}");
             }
 
-            return true;
+            return success;
         }
 
         private static List<Sprite> LoadSheetFile(string filename)
