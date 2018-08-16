@@ -28,9 +28,9 @@ namespace SpritePacker
             var paramUseSrcExt = parser.Add("use-src-ext", "on", "Whether to include the file extension in the \"src\" field.");
             var paramDebug = parser.Add("debug", "off", "Whether to print debug information.");
 
-            Console.Out.WriteLine("SpritePacker v0.9");
-            Console.Out.WriteLine("Copyright 2016 Henrique Lorenzi");
-            Console.Out.WriteLine("Build date: 26 sep 2017");
+            Console.Out.WriteLine("SpritePacker v0.10");
+            Console.Out.WriteLine("Copyright 2016-2018 Henrique Lorenzi");
+            Console.Out.WriteLine("Build date: 16 aug 2018");
             Console.Out.WriteLine();
 
             if (!parser.Parse(args) ||
@@ -514,13 +514,15 @@ namespace SpritePacker
 
                         lock (srcBmp)
                         {
+                            //Console.WriteLine(tag.spriteFullName);
+
                             if (srcBmp.Width <= 0 || srcBmp.Height <= 0 ||
                                 packing.rectangles[k].width <= 0 ||
                                 packing.rectangles[k].height <= 0)
                                 goto next;
 
                             var srcLockBits = srcBmp.LockBits(
-                                new Rectangle(0, 0, packing.rectangles[k].width, packing.rectangles[k].height),
+                                new Rectangle(0, 0, srcBmp.Width, srcBmp.Height),// packing.rectangles[k].width, packing.rectangles[k].height),
                                 System.Drawing.Imaging.ImageLockMode.ReadOnly,
                                 System.Drawing.Imaging.PixelFormat.Format32bppArgb);
 
@@ -619,6 +621,8 @@ namespace SpritePacker
 
             byte* srcPtr = (byte*)src.Scan0.ToPointer() + srcY * src.Stride + srcX * 4;
             byte* destPtr = (byte*)dest.Scan0.ToPointer() + destY * dest.Stride + destX * 4;
+
+            var srcPtr0 = srcPtr[0];
 
             destPtr[0] = srcPtr[0];
             destPtr[1] = srcPtr[1];
