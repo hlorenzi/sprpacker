@@ -48,8 +48,10 @@
   <ItemGroup>
     <Compile Include="ExportGroups.cs" />
     <Compile Include="IndentedStream.cs" />
+    <Compile Include="Json.cs" />
     <Compile Include="OccupationMatrix.cs" />
     <Compile Include="ParameterParser.cs" />
+    <Compile Include="Parser.cs" />
     <Compile Include="PathUtil.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

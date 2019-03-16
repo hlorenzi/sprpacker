@@ -1,5 +1,6 @@
 /.vs/
 /bin/
 /obj/
+/*.user
 /sprpacker_test/bin/
 /sprpacker_test/obj/

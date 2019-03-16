@@ -26,18 +26,23 @@ namespace SpritePacker
             var paramBleedingMargin = parser.Add("bleeding-margin", "0", "The margin in which to extend the border colors of sprites, in pixels.");
             var paramCrop = parser.Add("crop", "on", "Crop transparent sprite areas to save space.");
             var paramUseSrcExt = parser.Add("use-src-ext", "on", "Whether to include the file extension in the \"src\" field.");
+            var paramUseXml = parser.Add("xml", "off", "Whether to read sprite sheets in XML format.");
+            var paramOptimizeDuplicates = parser.Add("optimize-dup", "on", "Whether to optimize by collapsing duplicate sprite images.");
+            var paramParallel = parser.Add("parallel", "on", "Whether to write output images in parallel.");
+            var paramCacheImages = parser.Add("cache-images", "on", "Whether to cache images read from files in memory.");
             var paramDebug = parser.Add("debug", "off", "Whether to print debug information.");
 
-            Console.Out.WriteLine("SpritePacker v0.10");
-            Console.Out.WriteLine("Copyright 2016-2018 Henrique Lorenzi");
-            Console.Out.WriteLine("Build date: 16 aug 2018");
-            Console.Out.WriteLine();
+            Console.Out.WriteLine("SpritePacker v0.14");
 
             if (!parser.Parse(args) ||
                 !paramIn.HasValue() ||
                 !paramOutFolder.HasValue() ||
                 !(paramOut.HasValue() ^ paramOutGroups.HasValue()))
             {
+                Console.Out.WriteLine("Copyright 2016-2019 Henrique Lorenzi");
+                Console.Out.WriteLine("Build date: 16 mar 2019");
+                Console.Out.WriteLine();
+
                 Console.Out.WriteLine("Parameters:");
                 parser.PrintHelp("  ");
                 return;
@@ -65,6 +70,10 @@ namespace SpritePacker
             useFolders = paramUseFolders.GetBool();
             crop = paramCrop.GetBool();
             useSrcExt = paramUseSrcExt.GetBool();
+            useJson = !paramUseXml.GetBool();
+            optimizeDup = paramOptimizeDuplicates.GetBool();
+            parallel = paramParallel.GetBool();
+            cacheImages = paramCacheImages.GetBool();
             debug = paramDebug.GetBool();
 
             var result = Export();
@@ -90,6 +99,10 @@ namespace SpritePacker
         private static bool crop;
         private static bool useSrcExt;
         private static bool debug;
+        private static bool useJson;
+        private static bool optimizeDup;
+        private static bool parallel;
+        private static bool cacheImages;
 
 
         private class DataObject
@@ -107,6 +120,8 @@ namespace SpritePacker
             public string spriteLocalName;
             public string spriteFullName;
             public int x, y, width, height;
+            public Sprite duplicateImageParent;
+            public List<Sprite> duplicateImageChildren = new List<Sprite>();
             public int cropLeft, cropRight, cropTop, cropBottom;
             public List<DataObject> dataObjects = new List<DataObject>();
         }
@@ -134,14 +149,25 @@ namespace SpritePacker
                 Console.Out.WriteLine("Reading sprite sheets...");
 
                 var allSprites = new List<Sprite>();
-                Parallel.For(0, masterList.Count, (i) =>
+                System.Action<int> loadXmlFn = (i) =>
                 {
-                    var sheetSprites = LoadSheetFile(PathUtil.MakeAbsolutePath(srcDir, masterList[i]));
+                    var sheetSprites = LoadSheetFileXML(PathUtil.MakeAbsolutePath(srcDir, masterList[i]));
                     lock (allSprites)
                     {
                         allSprites.AddRange(sheetSprites);
                     }
-                });
+                };
+
+                if (parallel)
+                    Parallel.For(0, masterList.Count, loadXmlFn);
+                else
+                {
+                    for (var i = 0; i < masterList.Count; i++)
+                        loadXmlFn(i);
+                }
+
+                GC.Collect();
+
                 Console.Out.WriteLine("Found " + allSprites.Count + " sprites total.");
                 Console.Out.WriteLine();
 
@@ -154,11 +180,8 @@ namespace SpritePacker
 
                 var writeJsonLock = new object();
 
-                Parallel.ForEach(groupedSprites, (pair) =>
+                System.Action<string, List<Sprite>> packLoopFn = (groupName, spriteList) =>
                 {
-                    var groupName = pair.Key;
-                    var spriteList = pair.Value;
-
                     spriteList.Sort((a, b) =>
                         ((b.width - (crop ? b.cropLeft + b.cropRight : 0)) *
                          (b.height - (crop ? b.cropTop + b.cropBottom : 0))) -
@@ -189,11 +212,29 @@ namespace SpritePacker
                         {
                             Console.Out.WriteLine("Exporting <" + groupName + "> pack #" + (exportCount + 1) + ": " + packing.rectangles.Count + " sprites.");
 
-                            for (int r = 0; r < packing.rectangles.Count; r++)
+                            var exportingRectanglesNowRects = new List<RectanglePacker.Rectangle>();
+                            var exportingRectanglesNowSprites = new List<Sprite>();
+                            foreach (var rect in packing.rectangles)
                             {
-                                var rect = packing.rectangles[r];
-
                                 var spr = (Sprite)rect.tag;
+                                if (spr.duplicateImageParent != null)
+                                    continue;
+
+                                exportingRectanglesNowRects.Add(rect);
+                                exportingRectanglesNowSprites.Add(spr);
+
+                                foreach (var child in spr.duplicateImageChildren)
+                                {
+                                    exportingRectanglesNowRects.Add(rect);
+                                    exportingRectanglesNowSprites.Add(child);
+                                }
+                            }
+
+                            for (int r = 0; r < exportingRectanglesNowRects.Count; r++)
+                            {
+                                var rect = exportingRectanglesNowRects[r];
+                                var spr = exportingRectanglesNowSprites[r];
+
                                 s.WriteLine("{");
                                 s.Indent();
 
@@ -265,7 +306,15 @@ namespace SpritePacker
 
                         exportCount++;
                     }
-                });
+                };
+
+                if (parallel)
+                    Parallel.ForEach(groupedSprites, (pair) => packLoopFn(pair.Key, pair.Value));
+                else
+                {
+                    foreach (var pair in groupedSprites)
+                        packLoopFn(pair.Key, pair.Value);
+                }
 
                 s.Unindent();
                 s.WriteLine("]");
@@ -276,7 +325,7 @@ namespace SpritePacker
             return success;
         }
 
-        private static List<Sprite> LoadSheetFile(string filename)
+        private static List<Sprite> LoadSheetFileXML(string filename)
         {
             var sprites = new List<Sprite>();
 
@@ -320,6 +369,10 @@ namespace SpritePacker
                         spr.width = Convert.ToInt32(node.Attributes["width"].Value);
                         spr.height = Convert.ToInt32(node.Attributes["height"].Value);
 
+                        spr.duplicateImageParent = (optimizeDup ? sprites.Find(s => s.x == spr.x && s.y == spr.y && s.width == spr.width && s.height == spr.height) : null);
+                        if (spr.duplicateImageParent != null)
+                            spr.duplicateImageChildren.Add(spr);
+
                         FindCroppableArea(sheetBitmapBits,
                             spr.x, spr.y, spr.width, spr.height,
                             out spr.cropLeft, out spr.cropRight, out spr.cropTop, out spr.cropBottom);
@@ -352,7 +405,85 @@ namespace SpritePacker
                 }
 
                 sheetBitmap.UnlockBits(sheetBitmapBits);
+                sheetBitmap.Dispose();
             }
+
+            return sprites;
+        }
+
+
+        private static List<Sprite> LoadSheetFileJson(string filename)
+        {
+            var sprites = new List<Sprite>();
+
+            var spriteFullNamePathPrefix =
+                (Path.GetDirectoryName(PathUtil.MakeRelativePath(srcDir + Path.DirectorySeparatorChar, filename)) +
+                Path.DirectorySeparatorChar).
+                Replace(Path.DirectorySeparatorChar, '/');
+
+            if (spriteFullNamePathPrefix == "/")
+                spriteFullNamePathPrefix = "";
+
+            if (!useFolders)
+                spriteFullNamePathPrefix = "";
+
+            var json = Util.JsonValue.Parse(System.IO.File.ReadAllText(filename));
+
+            var sheetSrcImageFile = PathUtil.MakeAbsolutePath(Path.GetDirectoryName(filename), json["src"].StringValue);
+            var sheetBitmap = new Bitmap(sheetSrcImageFile);
+            var sheetBitmapBits = sheetBitmap.LockBits(
+                new Rectangle(0, 0, sheetBitmap.Width, sheetBitmap.Height),
+                System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+            foreach (var node in json["sprites"])
+            {
+                var spr = new Sprite();
+                spr.sheetFilename = filename;
+                spr.sheetImageFilename = sheetSrcImageFile;
+                spr.spriteLocalName = node["name"].StringValue.ToLower();
+                spr.spriteFullName = (sprNamePrefix + spriteFullNamePathPrefix + spr.spriteLocalName).ToLower();
+                spr.x = node["x"].IntValue;
+                spr.y = node["y"].IntValue;
+                spr.width = node["width"].IntValue;
+                spr.height = node["height"].IntValue;
+
+                spr.duplicateImageParent = (optimizeDup ? sprites.Find(s => s.x == spr.x && s.y == spr.y && s.width == spr.width && s.height == spr.height) : null);
+                if (spr.duplicateImageParent != null)
+                    spr.duplicateImageChildren.Add(spr);
+
+                FindCroppableArea(sheetBitmapBits,
+                    spr.x, spr.y, spr.width, spr.height,
+                    out spr.cropLeft, out spr.cropRight, out spr.cropTop, out spr.cropBottom);
+
+                foreach (var nodeGuide in node["guides"])
+                {
+                    var dataObj = new DataObject();
+                    dataObj.name = nodeGuide["name"].StringValue;
+
+                    foreach (var attrb in nodeGuide.Fields)
+                    {
+                        dataObj.attributeNames.Add(attrb.name);
+                        dataObj.attributeValues.Add(attrb.value.StringValue);
+
+                        if (attrb.name == "only-guides")
+                        {
+                            spr.width = 1;
+                            spr.height = 1;
+                            spr.cropLeft = 0;
+                            spr.cropRight = 0;
+                            spr.cropTop = 0;
+                            spr.cropBottom = 0;
+                        }
+                    }
+                    spr.dataObjects.Add(dataObj);
+                }
+
+                sprites.Add(spr);
+            }
+
+            sheetBitmap.UnlockBits(sheetBitmapBits);
+            sheetBitmap.Dispose();
 
             return sprites;
         }
@@ -444,8 +575,8 @@ namespace SpritePacker
             foreach (var spr in sprites)
             {
                 var rect = new RectanglePacker.Rectangle();
-                rect.width = spr.width - (crop ? (spr.cropLeft + spr.cropRight) : 0);
-                rect.height = spr.height - (crop ? (spr.cropTop + spr.cropBottom) : 0);
+                rect.width = (spr.duplicateImageParent != null && optimizeDup) ? 0 : spr.width - (crop ? (spr.cropLeft + spr.cropRight) : 0);
+                rect.height = (spr.duplicateImageParent != null && optimizeDup) ? 0 : spr.height - (crop ? (spr.cropTop + spr.cropBottom) : 0);
                 rect.tag = spr;
                 rect.debugName = spr.spriteFullName;
                 rects.Add(rect);
@@ -486,29 +617,39 @@ namespace SpritePacker
                         }
                     });
 
-                    var imageBitmaps = new Dictionary<string, Bitmap>();
+                    var imageBitmaps = new Dictionary<string, WeakReference<Bitmap>>();
 
-                    Parallel.For(0, packing.rectangles.Count, (k) =>
+                    System.Action<int> exportSpriteFunc = (k) =>
                     {
                         var tag = (Sprite)packing.rectangles[k].tag;
 
+                        WeakReference<Bitmap> weakSrcBmp = null;
                         Bitmap srcBmp = null;
 
                         lock (imageBitmaps)
                         {
-                            if (!imageBitmaps.TryGetValue(tag.sheetImageFilename, out srcBmp))
+                            if (!imageBitmaps.TryGetValue(tag.sheetImageFilename, out weakSrcBmp) || !weakSrcBmp.TryGetTarget(out srcBmp))
                             {
                                 try
                                 {
                                     srcBmp = new Bitmap(tag.sheetImageFilename);
+
+                                    if (cacheImages)
+                                        weakSrcBmp = new WeakReference<Bitmap>(srcBmp);
                                 }
-                                catch
+                                catch (Exception e)
                                 {
                                     Console.WriteLine();
                                     Console.WriteLine("Unable to load image <" + tag.sheetImageFilename + ">.");
+                                    Console.WriteLine();
+                                    Console.WriteLine(e.Message);
+                                    Console.WriteLine();
+                                    Console.WriteLine(e.StackTrace);
                                     goto next;
                                 }
-                                imageBitmaps.Add(tag.sheetImageFilename, srcBmp);
+
+                                if (cacheImages)
+                                    imageBitmaps.Add(tag.sheetImageFilename, weakSrcBmp);
                             }
                         }
 
@@ -597,10 +738,24 @@ namespace SpritePacker
                             }
 
                             srcBmp.UnlockBits(srcLockBits);
+
+                            if (!cacheImages)
+                                srcBmp.Dispose();
                         }
 
                     next:;
-                    });
+                    };
+
+                    if (parallel)
+                        Parallel.For(0, packing.rectangles.Count, exportSpriteFunc);
+                    else
+                    {
+                        for (var i = 0; i < packing.rectangles.Count; i++)
+                        {
+                            exportSpriteFunc(i);
+                            GC.Collect();
+                        }
+                    }
 
                     destBmp.UnlockBits(destLockBits);
                 }
@@ -641,7 +796,7 @@ namespace SpritePacker
                 right++;
 
             left = 0;
-            while (left + right < width && IsColumnCroppable(src, x + left + 1, y, height))
+            while (left + right < width && IsColumnCroppable(src, x + left, y, height))
                 left++;
 
             bottom = 0;
@@ -649,7 +804,7 @@ namespace SpritePacker
                 bottom++;
 
             top = 0;
-            while (top + bottom < height && IsRowCroppable(src, y + top + 1, x, width))
+            while (top + bottom < height && IsRowCroppable(src, y + top, x, width))
                 top++;
         }
 
